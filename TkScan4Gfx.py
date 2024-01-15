@@ -1,8 +1,7 @@
-import os
-from PIL import Image
-import sqlite3
 import hashlib
+import os
 import shutil
+import sqlite3
 import tkinter as tk
 from tkinter import filedialog
 
@@ -10,76 +9,95 @@ root = tk.Tk()
 root.withdraw()  # Hide the main window
 
 
-# Function to scan the specified media for image files
+# Funkcja do skanowania plików na określonym nośniku
 def scan_media_for_images(media_path):
     image_files = []
     for root, dirs, files in os.walk(media_path):
         for file in files:
-            if file.lower().endswith(('.tiff', '.jpeg', '.jpg', '.png','.cr2','.bmp')):
+            if file.lower().endswith(('.tiff', '.jpeg', '.jpg', '.png', '.cr2', '.bmp')):
                 image_files.append(os.path.join(root, file))
     return image_files
 
 
-# Function to create an SQLite database and store image file information
-def create_image_database(image_files):
-    conn = sqlite3.connect('image_database.db')
+# Funkcja do obliczania sumy kontrolnej pliku
+def calculate_checksum(file_path):
+    with open(file_path, 'rb') as f:
+        checksum = hashlib.md5(f.read()).hexdigest()
+    return checksum
+
+
+# Funkcja do tworzenia bazy danych SQLite i zapisywania informacji o plikach
+def create_image_database(image_files, database_path):
+    conn = sqlite3.connect(database_path)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS images
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT, checksum TEXT)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT, checksum TEXT, destination_dir TEXT)''')
 
     for file_path in image_files:
-        with open(file_path, 'rb') as f:
-            checksum = hashlib.md5(f.read()).hexdigest()
-        c.execute("INSERT INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
+        checksum = calculate_checksum(file_path)
+        c.execute("INSERT OR IGNORE INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
 
     conn.commit()
     conn.close()
 
 
-# Function to display and manage duplicates
-def display_and_manage_duplicates():
-    conn = sqlite3.connect('image_database.db')
+# Funkcja do wykrywania duplikatów i flagowania ich w bazie danych
+def flag_duplicates_in_database(database_path):
+    conn = sqlite3.connect(database_path)
     c = conn.cursor()
-    c.execute('''SELECT file_path, checksum, COUNT(*) AS count
-                  FROM images
-                  GROUP BY checksum
-                  HAVING count > 1''')
+    c.execute('''SELECT checksum, COUNT(*) AS count
+                 FROM images
+                 GROUP BY checksum
+                 HAVING count > 1''')
     duplicates = c.fetchall()
 
-    # Display duplicates to the user and manage them
-    # User input and decision making can be implemented here
-    for duplicate in duplicates:
-        print("Duplicate File:", duplicate[0])
+    with open('duplikaty.log', 'w') as log_file:
+        for duplicate in duplicates:
+            c.execute("SELECT id, file_path FROM images WHERE checksum=?", (duplicate[0],))
+            duplicate_files = c.fetchall()
+            for i, file_info in enumerate(duplicate_files):
+                if i > 0:
+                    log_file.write(f"Duplicate File: {file_info[1]}\n")
+                    c.execute("UPDATE images SET destination_dir = ? WHERE id = ?", ('duplicate', file_info[0]))
 
+    conn.commit()
     conn.close()
 
 
-# Function to move files to the new storage location
-def move_files_to_new_location(new_storage_location):
-    conn = sqlite3.connect('image_database.db')
+# Funkcja do przenoszenia plików do nowej lokalizacji i aktualizacji bazy danych
+def move_files_to_new_location(database_path, new_storage_location):
+    conn = sqlite3.connect(database_path)
     c = conn.cursor()
-    c.execute("SELECT file_path FROM images")
+    c.execute("SELECT id, file_path FROM images WHERE destination_dir IS NULL")
     files_to_move = c.fetchall()
 
-    for file_path in files_to_move:
-        shutil.move(file_path[0], new_storage_location)
+    for file_info in files_to_move:
+        file_id, file_path = file_info
+        new_file_path = os.path.join(new_storage_location, os.path.basename(file_path))
+        try:
+            shutil.move(file_path, new_file_path)
+            c.execute("UPDATE images SET destination_dir = ? WHERE id = ?", (new_storage_location, file_id))
+        except Exception as e:
+            with open('duplikaty.log', 'a') as log_file:
+                log_file.write(f"Error moving file: {file_path} - {str(e)}\n")
 
+    conn.commit()
     conn.close()
 
 
 # Dialog for a path
-def open_dialog():
-    file_path = filedialog.askdirectory()  # Open a file dialog to select a file
-
+def open_dialog(title):
+    file_path = filedialog.askdirectory(title=title)  # Open a file dialog to select a file
     print("Selected file path:", file_path)
     return file_path
 
 
-scan_folder = open_dialog()
-my_images = scan_media_for_images(scan_folder)
+# Główna część programu
+media_path = open_dialog('Wskaż gdzie szukać zdjęć.')
+database_path = 'image_database.db'
+new_storage_location = open_dialog('Wskaż gdzie zapisać zdjęcia.')
 
-create_image_database(my_images)
-display_and_manage_duplicates()
-
-new_location = open_dialog()
-move_files_to_new_location(new_location)
+image_files = scan_media_for_images(media_path)
+create_image_database(image_files, database_path)
+flag_duplicates_in_database(database_path)
+move_files_to_new_location(database_path, new_storage_location)
