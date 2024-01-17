@@ -35,7 +35,15 @@ def create_image_database(image_files, database_path):
 
     for file_path in image_files:
         checksum = calculate_checksum(file_path)
-        c.execute("INSERT OR IGNORE INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
+        #czy istnieje już w bazie?
+        c.execute("SELECT COUNT(*) FROM images WHERE checksum=?",(checksum,))
+        result=c.fetchone()
+        if result[0] > 0:
+            # tak - aktualizuj lokalizację
+            c.execute("UPDATE images SET file_path=? WHERE checksum=?", (file_path,checksum))
+        else:
+            # nie - dodaj nowy rekord
+            c.execute("INSERT OR IGNORE INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
 
     conn.commit()
     conn.close()
