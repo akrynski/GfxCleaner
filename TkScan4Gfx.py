@@ -35,17 +35,23 @@ def create_image_database(image_files, database_path):
 
     for file_path in image_files:
         checksum = calculate_checksum(file_path)
-        #czy istnieje już w bazie?
-        c.execute("SELECT COUNT(*) FROM images WHERE checksum=?",(checksum,))
-        result=c.fetchone()
+        # czy istnieje już w bazie?
+        c.execute("SELECT COUNT(*) FROM images WHERE checksum=?", (checksum,))
+        result = c.fetchone()
         if result[0] > 0:
             # tak - aktualizuj lokalizację
-            c.execute("UPDATE images SET file_path=? WHERE checksum=?", (file_path,checksum))
+            c.execute("UPDATE images SET file_path=? WHERE checksum=?", (file_path, checksum))
         else:
             # nie - dodaj nowy rekord
-            c.execute("INSERT OR IGNORE INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
-
-    conn.commit()
+            c.execute("INSERT INTO images (file_path, checksum) VALUES (?, ?)", (file_path, checksum))
+    try:
+        conn.commit()
+    except sqlite3.Error as er:
+        print('SQLite error: %s' % (' '.join(er.args)))
+        print("Exception class is: ", er.__class__)
+        print('SQLite traceback: ')
+        exc_type, exc_value, exc_tb = sys.exc_info()
+        print(traceback.format_exception(exc_type, exc_value, exc_tb))
     conn.close()
 
 
@@ -100,7 +106,33 @@ def open_dialog(title):
     return file_path
 
 
+def restore_files_to_original_location(database_path):
+    conn = sqlite3.connect(database_path)
+    c = conn.cursor()
+
+    c.execute("SELECT id, file_path, destination_dir FROM images WHERE destination_dir IS NOT NULL")
+    files_to_restore = c.fetchall()
+
+    for file_info in files_to_restore:
+        file_id, file_path, destination_dir = file_info
+        file_path=os.path.normpath(file_path).replace('\\', '/')
+        file_name = os.path.basename(file_path)
+        dir_name = os.path.dirname(file_path)
+        try:
+            shutil.move(destination_dir+"\\"+file_name, dir_name)
+            c.execute("UPDATE images SET destination_dir = NULL WHERE id = ?", (file_id,))
+        except Exception as e:
+            print(f"Error restoring file: {file_path} - {str(e)}")
+
+    conn.commit()
+    conn.close()
+
+
+# Przykładowe użycie
+
+
 # Główna część programu
+'''
 media_path = open_dialog('Wskaż gdzie szukać zdjęć.')
 database_path = 'image_database.db'
 new_storage_location = open_dialog('Wskaż gdzie zapisać zdjęcia.')
@@ -109,3 +141,6 @@ image_files = scan_media_for_images(media_path)
 create_image_database(image_files, database_path)
 flag_duplicates_in_database(database_path)
 move_files_to_new_location(database_path, new_storage_location)
+'''
+database_path = 'image_database.db'
+restore_files_to_original_location(database_path)
